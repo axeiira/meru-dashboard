@@ -1513,7 +1513,11 @@ const sCurveConfig = {
   actual: { label: 'Actual', color: 'var(--chart-2)' },
 } satisfies ChartConfig
 
-type ProgressSaveChange = { periodId: string; item: BoqItem; value: number }
+type ProgressSaveChange = {
+  periodId: string
+  item: BoqItem
+  value: number | null
+}
 
 function useProgressSchedule(projectId: string) {
   const { auth } = useAuthStore()
@@ -1612,12 +1616,16 @@ function ProgressTab({ projectId }: { projectId: string }) {
         ? null
         : Number(actual.cumulative[i]!.toFixed(2)),
   }))
-  const latestActual =
-    [...actual.cumulative].reverse().find((v) => v != null) ?? 0
-  const latestPlanned =
-    dataDate == null
-      ? 0
-      : (data.find((p) => p.endDate === dataDate)?.planned ?? 0)
+  // Anchor both metrics to the last period with an actual reading so deviation
+  // compares like-for-like (planned vs actual at the same period), even when
+  // the data date sits past a cleared trailing period.
+  const lastIdx = actual.cumulative.reduce(
+    (last, v, i) => (v != null ? i : last),
+    -1
+  )
+  const latestActual = lastIdx < 0 ? 0 : (actual.cumulative[lastIdx] ?? 0)
+  const latestPlanned = lastIdx < 0 ? 0 : data[lastIdx].planned
+  const asOf = lastIdx < 0 ? null : data[lastIdx].endDate
   const deviation = latestActual - latestPlanned
   return (
     <div>
@@ -1686,13 +1694,11 @@ function ProgressTab({ projectId }: { projectId: string }) {
             label='Actual progress'
             value={`${latestActual.toFixed(1)}%`}
             hint={
-              dataDate
-                ? `As of ${formatDate(dataDate)}`
-                : 'No actual entries yet'
+              asOf ? `As of ${formatDate(asOf)}` : 'No actual entries yet'
             }
           />
           <MetricCard
-            label='Planned at data date'
+            label='Planned to date'
             value={`${latestPlanned.toFixed(1)}%`}
           />
           <MetricCard
@@ -1714,18 +1720,31 @@ function ProgressTab({ projectId }: { projectId: string }) {
   )
 }
 
-function computeActualCurve(
+export function computeActualCurve(
   rows: ScheduleRow[],
   periods: ReportingPeriod[],
   entries: ProgressEntry[],
   dataDate: string | null
 ) {
   const byKey = new Map<string, number>()
-  for (const e of entries)
+  const readPeriods = new Set<string>()
+  for (const e of entries) {
+    // A cleared cell keeps its entry row (cumulative_* null) but the server
+    // still emits pct_complete: 0. Treat that as "no reading" so it doesn't
+    // reset the carry-forward — matches how the grid renders it (blank).
+    if (e.cumulative_percent == null && e.cumulative_quantity == null) continue
     byKey.set(`${e.boq_item_id}|${e.period_id}`, num(e.pct_complete))
+    readPeriods.add(e.period_id)
+  }
+  // The actual line ends at the last period with a real reading; trailing
+  // periods (e.g. a cleared M11) drop off instead of drawing a flat
+  // carry-forward to the data date. '' when nothing is recorded → empty line.
+  const lastRead = periods
+    .filter((p) => readPeriods.has(p.id))
+    .reduce((d, p) => (p.end_date > d ? p.end_date : d), '')
   const cumulative: (number | null)[] = []
   for (const p of periods) {
-    if (dataDate && p.end_date > dataDate) {
+    if (!lastRead || p.end_date > lastRead || (dataDate && p.end_date > dataDate)) {
       cumulative.push(null)
       continue
     }
@@ -1802,9 +1821,10 @@ function ProgressEntryMatrix({
     const changes = [...dirty].flatMap((key) => {
       const [itemId, periodId] = key.split('|')
       const item = itemById.get(itemId)
-      return item
-        ? [{ periodId, item, value: Number(drafts.get(key)) || 0 }]
-        : []
+      if (!item) return []
+      // Empty cell clears the entry (null); '0' is a real zero reading.
+      const raw = (drafts.get(key) ?? '').trim()
+      return [{ periodId, item, value: raw === '' ? null : Number(raw) }]
     })
     setSaving(true)
     try {
