@@ -4,9 +4,11 @@ import {
   ArrowUpRight,
   CircleAlert,
   PauseCircle,
+  Pencil,
   Plus,
   Search,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { isTenantAdmin, useAuthStore } from '@/stores/auth-store'
@@ -14,8 +16,10 @@ import {
   createClient,
   createMember,
   createProject,
+  deleteClient,
   isManager,
   listClients,
+  updateClient,
   listMembers,
   listOpenTickets,
   listProjects,
@@ -24,6 +28,17 @@ import {
   type Project as ApiProject,
   type TenantMember,
 } from '@/lib/auth-api'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -727,6 +742,328 @@ export function TeamPage() {
           <EmptyState message='No organisation settings available.' />
         </Panel>
       </div>
+    </>
+  )
+}
+
+const CLIENT_GRID = '1.6fr 1fr 90px 1fr 80px'
+
+const emptyClientEditForm = { name: '', code: '' }
+
+// Create/edit share one dialog: the two differ only by which endpoint they call
+// and whether the fields start populated.
+function ClientDialog({
+  client,
+  trigger,
+  onSaved,
+}: {
+  client?: Client
+  trigger: React.ReactNode
+  onSaved: () => void
+}) {
+  const { auth } = useAuthStore()
+  const token = auth.accessToken
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState(emptyClientEditForm)
+  const [saving, setSaving] = useState(false)
+
+  // Repopulate as the dialog opens so a cancelled edit does not leak into the
+  // next one. Done here rather than in an effect — there is no external system
+  // to sync with, just state that follows an event.
+  const onOpenChange = (next: boolean) => {
+    if (next) {
+      setForm(
+        client
+          ? { name: client.name, code: client.code ?? '' }
+          : emptyClientEditForm
+      )
+    }
+    setOpen(next)
+  }
+
+  const set =
+    (k: keyof typeof emptyClientEditForm) => (e: FormEvent<HTMLInputElement>) =>
+      setForm((p) => ({ ...p, [k]: e.currentTarget.value }))
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!token || !form.name.trim()) return
+    setSaving(true)
+    try {
+      const code = form.code.trim() || null
+      if (client) {
+        await updateClient(token, client.id, { name: form.name.trim(), code })
+      } else {
+        await createClient(token, { name: form.name.trim(), code })
+      }
+      setOpen(false)
+      toast.success(client ? 'Client updated.' : 'Client created.')
+      onSaved()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save client.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      <DialogContent className='sm:max-w-md'>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>{client ? 'Edit client' : 'New client'}</DialogTitle>
+            <DialogDescription>
+              Clients own projects. The code is optional but must be unique
+              across the firm.
+            </DialogDescription>
+          </DialogHeader>
+          <div className='grid gap-3 py-4'>
+            <div className='grid gap-2'>
+              <Label htmlFor='client-name'>Name</Label>
+              <Input
+                id='client-name'
+                autoFocus
+                value={form.name}
+                onInput={set('name')}
+                required
+              />
+            </div>
+            <div className='grid gap-2'>
+              <Label htmlFor='client-code'>Code</Label>
+              <Input id='client-code' value={form.code} onInput={set('code')} />
+              {client && (
+                <p className='text-[11px] text-muted-foreground'>
+                  Clearing this leaves the existing code in place — the API
+                  cannot unset it.
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type='button'
+              variant='outline'
+              className='rounded-md text-xs'
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type='submit'
+              className='rounded-md text-xs'
+              disabled={!form.name.trim() || saving}
+            >
+              {saving ? 'Saving…' : client ? 'Save changes' : 'Create client'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function DeleteClientButton({
+  client,
+  projectCount,
+  onDeleted,
+}: {
+  client: Client
+  projectCount: number
+  onDeleted: () => void
+}) {
+  const { auth } = useAuthStore()
+  const token = auth.accessToken
+  const [busy, setBusy] = useState(false)
+
+  async function remove() {
+    if (!token) return
+    setBusy(true)
+    try {
+      await deleteClient(token, client.id)
+      toast.success('Client deleted.')
+      onDeleted()
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to delete client.'
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          aria-label={`Delete ${client.name}`}
+          disabled={busy}
+          className='text-muted-foreground hover:text-destructive disabled:opacity-50'
+        >
+          <Trash2 className='size-3.5' />
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {client.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {projectCount > 0
+              ? `This client has ${projectCount} project${projectCount === 1 ? '' : 's'}. They keep running and stay in the project list — only the client is removed, and it can no longer be picked for new projects.`
+              : 'The client is removed and can no longer be picked for new projects.'}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={remove}>Delete</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+export function ClientsPage() {
+  const { auth } = useAuthStore()
+  const token = auth.accessToken
+  const canManage = isTenantAdmin(auth.user)
+  const [clients, setClients] = useState<Client[]>([])
+  const [projects, setProjects] = useState<ApiProject[]>([])
+  const [loading, setLoading] = useState(true)
+  const [reloads, setReloads] = useState(0)
+  const refresh = () => setReloads((n) => n + 1)
+
+  useEffect(() => {
+    if (!token) return
+    async function load() {
+      try {
+        // Projects come along only to count them per client — there is no
+        // per-client project count on the clients endpoint.
+        const [clientRes, projectRes] = await Promise.all([
+          listClients(token),
+          listProjects(token),
+        ])
+        setClients(clientRes.data)
+        setProjects(projectRes.data)
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to load clients.'
+        )
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void load()
+  }, [token, reloads])
+
+  const countFor = (clientId: string) =>
+    projects.filter((p) => p.client_id === clientId).length
+  const withProjects = clients.filter((c) => countFor(c.id) > 0).length
+
+  return (
+    <>
+      <PageHeader
+        eyebrow='Tenant admin'
+        title='Clients'
+        description='The firms you contract for. Every project belongs to one.'
+        action={
+          canManage ? (
+            <ClientDialog
+              onSaved={refresh}
+              trigger={
+                <Button className='rounded-md text-xs'>
+                  <Plus className='size-3.5' /> New client
+                </Button>
+              }
+            />
+          ) : undefined
+        }
+      />
+      <div className='grid gap-3 md:grid-cols-2 xl:grid-cols-4'>
+        <MetricCard
+          label='Clients'
+          value={String(clients.length)}
+          hint='on the books'
+        />
+        <MetricCard
+          label='With projects'
+          value={String(withProjects)}
+          hint='currently active work'
+        />
+        <MetricCard
+          label='Without projects'
+          value={String(clients.length - withProjects)}
+          hint='no projects yet'
+        />
+        <MetricCard
+          label='Projects'
+          value={String(projects.length)}
+          hint='across all clients'
+        />
+      </div>
+
+      <Panel title='Clients' className='mt-4'>
+        <div className='overflow-x-auto'>
+          {loading ? (
+            <EmptyState message='Loading clients...' />
+          ) : clients.length ? (
+            <div className='min-w-[640px]'>
+              <div
+                className='grid gap-2.5 border-b border-border pb-2 text-[10px] tracking-wide text-muted-foreground uppercase'
+                style={{ gridTemplateColumns: CLIENT_GRID }}
+              >
+                <div>Name</div>
+                <div>Code</div>
+                <div>Projects</div>
+                <div>Added</div>
+                <div className='text-right'>Actions</div>
+              </div>
+              {clients.map((c) => (
+                <div
+                  key={c.id}
+                  className='grid items-center gap-2.5 border-b border-border py-2.5 text-xs'
+                  style={{ gridTemplateColumns: CLIENT_GRID }}
+                >
+                  <div className='font-medium text-foreground'>{c.name}</div>
+                  <div className='font-mono text-[11px] text-muted-foreground'>
+                    {c.code || '—'}
+                  </div>
+                  <div className='font-mono text-muted-foreground'>
+                    {countFor(c.id)}
+                  </div>
+                  <div className='text-[11px] text-muted-foreground'>
+                    {new Date(c.created_at).toLocaleDateString()}
+                  </div>
+                  <div className='flex items-center justify-end gap-3'>
+                    {canManage && (
+                      <>
+                        <ClientDialog
+                          client={c}
+                          onSaved={refresh}
+                          trigger={
+                            <button
+                              aria-label={`Edit ${c.name}`}
+                              className='text-muted-foreground hover:text-foreground'
+                            >
+                              <Pencil className='size-3.5' />
+                            </button>
+                          }
+                        />
+                        <DeleteClientButton
+                          client={c}
+                          projectCount={countFor(c.id)}
+                          onDeleted={refresh}
+                        />
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState message='No clients yet. Create one to start registering projects.' />
+          )}
+        </div>
+      </Panel>
     </>
   )
 }

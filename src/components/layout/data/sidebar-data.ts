@@ -1,6 +1,7 @@
 import {
   LayoutDashboard,
   FolderKanban,
+  Building2,
   Users,
   Settings,
   UserCog,
@@ -32,6 +33,7 @@ export const sidebarData: SidebarData = {
       items: [
         { title: 'Dashboard', url: '/', icon: LayoutDashboard },
         { title: 'Projects', url: '/projects', icon: FolderKanban },
+        { title: 'Clients', url: '/clients', icon: Building2 },
         { title: 'Team', url: '/team', icon: Users },
       ],
     },

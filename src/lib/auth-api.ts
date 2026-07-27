@@ -295,6 +295,37 @@ export async function createClient(
   return res.json()
 }
 
+// PATCH /clients COALESCEs every field, so omitting one leaves it unchanged —
+// there is no way to clear a code back to NULL through this endpoint.
+export async function updateClient(
+  token: string,
+  clientId: string,
+  body: { name?: string; code?: string | null }
+): Promise<{ client: Client }> {
+  const res = await fetch(`${BASE}/clients/${clientId}`, {
+    method: 'PATCH',
+    headers: tenantJsonHeaders(token),
+    credentials: 'include',
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res))
+  return res.json()
+}
+
+// Soft delete. The client's projects are deliberately left running — see
+// DELETE /clients in the backend.
+export async function deleteClient(
+  token: string,
+  clientId: string
+): Promise<void> {
+  const res = await fetch(`${BASE}/clients/${clientId}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+    credentials: 'include',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res))
+}
+
 export async function listProjects(
   token: string
 ): Promise<{ data: Project[] }> {

@@ -1,9 +1,10 @@
-import { Gauge, Grid2X2, Users } from 'lucide-react'
+import { Building2, Gauge, Grid2X2, Users } from 'lucide-react'
 import { isTenantAdmin, useAuthStore } from '@/stores/auth-store'
 
 export const workspaceLinks = [
   { label: 'Dashboard', to: '/', icon: Gauge },
   { label: 'Projects', to: '/projects', icon: Grid2X2, adminOnly: true },
+  { label: 'Clients', to: '/clients', icon: Building2, adminOnly: true },
   { label: 'Team & organisation', to: '/team', icon: Users, adminOnly: true },
 ] as const
 
