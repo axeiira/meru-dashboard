@@ -2,6 +2,7 @@ import express from 'express'
 import cookieParser from 'cookie-parser'
 import { randomUUID } from 'node:crypto'
 import { config } from './config'
+import { assertRlsRole } from './db'
 import { Authed, errorHandler } from './http'
 import { platformRouter } from './routes/platform'
 import { authRouter } from './routes/auth'
@@ -35,4 +36,13 @@ app.use('/api/v1', ticketsRouter)
 
 app.use(errorHandler)
 
-app.listen(config.PORT, () => console.log(`API listening on http://localhost:${config.PORT}/api/v1`))
+assertRlsRole()
+  .then(() =>
+    app.listen(config.PORT, () =>
+      console.log(`API listening on http://localhost:${config.PORT}/api/v1`),
+    ),
+  )
+  .catch((e: unknown) => {
+    console.error(e instanceof Error ? e.message : e)
+    process.exit(1)
+  })

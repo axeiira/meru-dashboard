@@ -76,7 +76,9 @@ membersRouter.get(
          FROM users u
          LEFT JOIN role_assignments ra ON ra.user_id = u.id
          LEFT JOIN roles r ON r.id = ra.role_id
+         WHERE u.tenant_id = $1
          GROUP BY u.id ORDER BY u.created_at`,
+        [req.user!.tid],
       ),
     )
     res.json({ data: r.rows, page: { next_cursor: null, has_more: false } })
@@ -98,7 +100,10 @@ membersRouter.post(
       req.body,
     )
     const row = await withCtx(req.ctx, async (q) => {
-      const u = await q(`SELECT 1 FROM users WHERE id = $1`, [req.params.userId])
+      const u = await q(`SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2`, [
+        req.params.userId,
+        req.user!.tid,
+      ])
       if (!u.rowCount) throw errors.notFound('Member not found.')
       const role = await q<{ id: string }>(
         `SELECT id FROM roles WHERE tenant_id IS NULL AND key = $1`,

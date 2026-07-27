@@ -47,3 +47,24 @@ export async function withCtx<T>(ctx: Ctx, fn: (q: Querier) => Promise<T>): Prom
 
 // Pre-auth queries (login lookups via SECURITY DEFINER funcs) need no context.
 export const query: Querier = (text, params) => pool.query(text, params)
+
+// Tenant isolation is RLS, and RLS does not apply to a superuser, a BYPASSRLS
+// role, or (on the tables 06_secdef_needs_no_force_rls.sql un-FORCEd) the table
+// owner. Connecting as any of those silently serves every tenant's rows instead
+// of failing — so refuse to boot rather than leak. Run at startup only.
+export async function assertRlsRole() {
+  const r = await pool.query<{ role: string; bypasses: boolean; owns: boolean }>(
+    `SELECT current_user AS role,
+            (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS bypasses,
+            pg_has_role(current_user, relowner, 'USAGE') AS owns
+       FROM pg_class WHERE oid = 'public.users'::regclass`,
+  )
+  const { role, bypasses, owns } = r.rows[0]
+  if (bypasses || owns) {
+    throw new Error(
+      `DATABASE_URL connects as "${role}", which bypasses row-level security ` +
+        `(${bypasses ? 'superuser/BYPASSRLS' : 'owner of public.users'}). Tenant ` +
+        `isolation would be off. Point DATABASE_URL at the app_rls role instead.`,
+    )
+  }
+}
