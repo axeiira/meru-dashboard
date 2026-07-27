@@ -32,24 +32,43 @@ const COLS = [
 const projCols = COLS.join(', ')
 const projColsP = COLS.map((c) => `p.${c}`).join(', ') // qualified, for joins
 
+// Leaves of the active baseline, for the expressions below. `p` is the outer
+// projects alias.
+const ACTIVE_LEAVES = `
+  FROM boq_versions bv
+  JOIN boq_items i ON i.boq_version_id = bv.id AND i.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM boq_items ch WHERE ch.parent_id = i.id AND ch.deleted_at IS NULL)`
+
 // Overall actual progress %, computed exactly like the Progress tab / S-curve:
 // Σ over active-baseline leaves of weight × (latest pct_complete on or before the
 // project's data_date) / 100. Counts all recorded progress regardless of period
-// approval. NULL/no-data collapses to 0. References the outer projects alias `p`.
-const PROGRESS_EXPR = `COALESCE((
+// approval. A cleared cell keeps its row with both cumulative_* NULL and
+// pct_complete 0 — that is "no reading", not 0% done, so it must not override
+// the carry-forward (the Progress tab skips it the same way).
+const PROGRESS_SUB = `(
   SELECT SUM(i.weight * pe.pct_complete / 100.0)
-  FROM boq_versions bv
-  JOIN boq_items i ON i.boq_version_id = bv.id AND i.deleted_at IS NULL
-    AND NOT EXISTS (SELECT 1 FROM boq_items ch WHERE ch.parent_id = i.id AND ch.deleted_at IS NULL)
+  ${ACTIVE_LEAVES}
   JOIN LATERAL (
     SELECT pe2.pct_complete
     FROM progress_entries pe2
     JOIN reporting_periods rp ON rp.id = pe2.period_id
     WHERE pe2.boq_item_id = i.id AND (p.data_date IS NULL OR rp.end_date <= p.data_date)
+      AND (pe2.cumulative_percent IS NOT NULL OR pe2.cumulative_quantity IS NOT NULL)
     ORDER BY rp.end_date DESC LIMIT 1
   ) pe ON true
   WHERE bv.project_id = p.id AND bv.status = 'active'
-), 0)::float8 AS progress`
+)`
+const PROGRESS_EXPR = `COALESCE(${PROGRESS_SUB}, 0)::float8 AS progress`
+
+// Planned % as of the data date, from the typed distribution matrix — the same
+// source the Schedule/Progress tabs plot.
+const PLANNED_SUB = `(
+  SELECT SUM(i.weight * d.planned_pct / 100.0)
+  ${ACTIVE_LEAVES}
+  JOIN boq_item_distribution d ON d.boq_item_id = i.id
+  JOIN reporting_periods rp ON rp.id = d.period_id AND rp.end_date <= p.data_date
+  WHERE bv.project_id = p.id AND bv.status = 'active'
+)`
 
 // Unresolved tickets on the project — any > 0 flags it as problematic on the dashboard.
 const OPEN_TICKETS_EXPR = `(
@@ -58,15 +77,14 @@ const OPEN_TICKETS_EXPR = `(
     AND t.status IN ('open','in_progress')
 )::int AS open_ticket_count`
 
-// Schedule deviation from the latest period summary (actual − planned %).
-// Negative = behind schedule. NULL when no progress/summary exists yet.
-const DEVIATION_EXPR = `(
-  SELECT ps.deviation_pct
-  FROM period_summaries ps
-  JOIN reporting_periods rp ON rp.id = ps.period_id
-  WHERE ps.project_id = p.id
-  ORDER BY rp.end_date DESC LIMIT 1
-)::float8 AS deviation`
+// Schedule deviation = actual − planned, both taken at the data date (the last
+// period with a real reading). Negative = behind schedule. NULL until progress
+// is recorded. Read live rather than from period_summaries: those are refreshed
+// through the last period of the schedule, so the newest one compared today's
+// actual against a planned that has already climbed to 100% — a project 9%
+// behind read as −100%.
+const DEVIATION_EXPR = `(CASE WHEN p.data_date IS NULL THEN NULL
+  ELSE COALESCE(${PROGRESS_SUB}, 0) - COALESCE(${PLANNED_SUB}, 0) END)::float8 AS deviation`
 
 // POST /projects — requires an existing client (projects.client_id is NOT NULL).
 projectsRouter.post(

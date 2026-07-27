@@ -157,10 +157,14 @@ progressRouter.put(
       for (const p of affectedPeriods.rows) await q(`SELECT fn_refresh_period_summary($1)`, [p.id])
 
       await q(
+        // Only periods holding a real reading count: a cleared cell keeps its
+        // row (cumulative_* NULL, pct_complete 0), and letting it set the data
+        // date pushed progress/deviation past the last period actually reported.
         `UPDATE projects SET data_date = (
            SELECT MAX(rp.end_date) FROM reporting_periods rp
            WHERE rp.project_id = $1
-             AND EXISTS (SELECT 1 FROM progress_entries pe WHERE pe.period_id = rp.id)
+             AND EXISTS (SELECT 1 FROM progress_entries pe WHERE pe.period_id = rp.id
+                           AND (pe.cumulative_percent IS NOT NULL OR pe.cumulative_quantity IS NOT NULL))
          ) WHERE id = $1`,
         [period.rows[0].project_id],
       )

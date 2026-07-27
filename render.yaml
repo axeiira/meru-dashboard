@@ -6,9 +6,9 @@
 #
 # ── One-time manual steps after first `render.yaml` sync (Render can't do these) ──
 # 1. Each managed DB below gives you an OWNER role. Connect once as owner and run,
-#    in order: db/01_schema.sql, 02, 03, 04, 05. That creates the `app_rls` login role
+#    in order: db/01_schema.sql, 02 … 07. That creates the `app_rls` login role
 #    (password 'app', NOSUPERUSER NOBYPASSRLS) the app actually uses.
-#      psql "<owner Internal Database URL>" -f db/01_schema.sql   # ...through 05
+#      psql "<owner Internal Database URL>" -f db/01_schema.sql   # ...through 07
 # 2. Set each API service's DATABASE_URL (marked sync:false) to the app_rls URL:
 #      postgresql://app_rls:app@<db Internal host>:5432/<db name>
 #    Use the Internal host (no SSL needed inside Render). For PROD, first change
