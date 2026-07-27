@@ -1,4 +1,6 @@
-// Seed the first platform admin (SaaS operator). Run once:
+// Seed the first platform admin (SaaS operator). Idempotent, and re-running it
+// resets that admin's password / reactivates them — it doubles as the break-glass
+// password reset when nobody can log in to /platform:
 //   pnpm api:bootstrap [email] [password] [full name]
 // Connects as app_rls and sets the platform flag to satisfy the platform_only
 // RLS policy. The GUC is not a secret — the security boundary is that real
@@ -17,13 +19,16 @@ try {
   const r = await client.query(
     `INSERT INTO platform_admins (email, password_hash, full_name, role, status, email_verified_at)
      VALUES ($1,$2,$3,'super_admin','active', now())
-     ON CONFLICT (email) DO NOTHING
-     RETURNING id`,
+     ON CONFLICT (email) DO UPDATE
+       SET password_hash = EXCLUDED.password_hash,
+           role          = 'super_admin',
+           status        = 'active'
+     RETURNING id, (xmax = 0) AS created`,
     [email, hashPassword(password), fullName],
   )
   await client.query('COMMIT')
-  if (r.rowCount) console.log(`Created platform super_admin: ${email}  (password: ${password})`)
-  else console.log(`Platform admin ${email} already exists — nothing to do.`)
+  const verb = r.rows[0].created ? 'Created' : 'Reset'
+  console.log(`${verb} platform super_admin: ${email}  (password: ${password})`)
 } catch (e) {
   await client.query('ROLLBACK')
   throw e
