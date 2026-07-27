@@ -85,16 +85,32 @@ clientsRouter.patch(
 )
 
 // DELETE /clients/:clientId  (soft)
+//
+// Client-scope grants are dropped with the client, for the same reason project
+// grants are dropped in DELETE /projects: role_assignments.scope_id is
+// polymorphic, so no foreign key cascades them and a grant outlives whatever it
+// pointed at. Both statements share one transaction.
+//
+// Project-scope grants under this client are deliberately left alone — deleting
+// a client does not delete its projects, and those projects stay listed and
+// workable, so their grants are still live.
 clientsRouter.delete(
   '/clients/:clientId',
   requirePermission('client.manage', paramScope('client', 'clientId')),
   asyncHandler(async (req, res) => {
-    const r = await withCtx(req.ctx, (q) =>
-      q(`UPDATE clients SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [
-        req.params.clientId,
-      ]),
-    )
-    if (!r.rowCount) throw errors.notFound('Client not found.')
+    await withCtx(req.ctx, async (q) => {
+      const r = await q(
+        `UPDATE clients SET deleted_at = now()
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+        [req.params.clientId, req.user!.tid],
+      )
+      if (!r.rowCount) throw errors.notFound('Client not found.')
+      await q(
+        `DELETE FROM role_assignments
+         WHERE scope_type = 'client' AND scope_id = $1 AND tenant_id = $2`,
+        [req.params.clientId, req.user!.tid],
+      )
+    })
     res.status(204).end()
   }),
 )
