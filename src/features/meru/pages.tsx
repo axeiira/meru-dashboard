@@ -2,7 +2,6 @@ import { type FormEvent, useDeferredValue, useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowUpRight,
-  ChevronDown,
   CircleAlert,
   PauseCircle,
   Plus,
@@ -701,10 +700,7 @@ export function TeamPage() {
                   <div className='text-[11px] text-muted-foreground'>
                     {m.email}
                   </div>
-                  <div className='flex max-w-44 items-center justify-between rounded-md border border-border px-2.5 py-1.5 text-foreground'>
-                    <span>{primaryRole(m)}</span>
-                    <ChevronDown className='size-3 text-muted-foreground' />
-                  </div>
+                  <div className='text-foreground'>{primaryRole(m)}</div>
                   <div className='font-mono text-muted-foreground'>
                     {projectCount(m)}
                   </div>
