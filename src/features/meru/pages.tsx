@@ -13,7 +13,9 @@ import { toast } from 'sonner'
 import { isTenantAdmin, useAuthStore } from '@/stores/auth-store'
 import {
   createClient,
+  createMember,
   createProject,
+  isManager,
   listClients,
   listMembers,
   listOpenTickets,
@@ -465,16 +467,141 @@ const roleLabel = (role: string) => {
   return role
 }
 
+// A Manager with no grants yet is still a Manager — reporting 'No role' for a
+// freshly created one would just look broken.
 const primaryRole = (member: TenantMember) =>
   member.assignments[0]?.role
     ? roleLabel(member.assignments[0].role)
-    : 'No role'
+    : isManager(member)
+      ? 'Manager'
+      : 'No role'
+
+const projectCount = (member: TenantMember) => member.project_count ?? 0
+
+const emptyManagerForm = { full_name: '', email: '', password: '' }
+
+// Creates a Manager with no project scope. They appear in the project-creation
+// manager list and in each project's Team tab immediately, and gain access when
+// assigned there.
+function CreateManagerDialog({ onCreated }: { onCreated: () => void }) {
+  const { auth } = useAuthStore()
+  const token = auth.accessToken
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState(emptyManagerForm)
+  const [saving, setSaving] = useState(false)
+
+  const valid =
+    form.full_name.trim() && form.email.trim() && form.password.length >= 8
+
+  const set =
+    (k: keyof typeof emptyManagerForm) => (e: FormEvent<HTMLInputElement>) =>
+      setForm((p) => ({ ...p, [k]: e.currentTarget.value }))
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!token || !valid) return
+    setSaving(true)
+    try {
+      await createMember(token, {
+        full_name: form.full_name,
+        email: form.email,
+        password: form.password,
+      })
+      setForm(emptyManagerForm)
+      setOpen(false)
+      toast.success('Manager created. Assign them to a project to grant access.')
+      onCreated()
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to create manager.'
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size='sm' className='rounded-md text-xs'>
+          <Plus className='size-3.5' /> Create manager
+        </Button>
+      </DialogTrigger>
+      <DialogContent className='sm:max-w-md'>
+        <form onSubmit={submit}>
+          <DialogHeader>
+            <DialogTitle>Create manager</DialogTitle>
+            <DialogDescription>
+              The account is created without project access. Assign it to
+              projects from a project’s Team tab, or when creating a project.
+            </DialogDescription>
+          </DialogHeader>
+          <div className='grid gap-3 py-4'>
+            <div className='grid gap-2'>
+              <Label htmlFor='manager-name'>Full name</Label>
+              <Input
+                id='manager-name'
+                autoFocus
+                value={form.full_name}
+                onInput={set('full_name')}
+                required
+              />
+            </div>
+            <div className='grid gap-2'>
+              <Label htmlFor='manager-email'>Email</Label>
+              <Input
+                id='manager-email'
+                type='email'
+                value={form.email}
+                onInput={set('email')}
+                required
+              />
+            </div>
+            <div className='grid gap-2'>
+              <Label htmlFor='manager-password'>Password</Label>
+              <Input
+                id='manager-password'
+                type='password'
+                value={form.password}
+                onInput={set('password')}
+                minLength={8}
+                required
+              />
+              <p className='text-[11px] text-muted-foreground'>
+                Minimum 8 characters. Share it with the manager to sign in.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type='button'
+              variant='outline'
+              className='rounded-md text-xs'
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type='submit'
+              className='rounded-md text-xs'
+              disabled={!valid || saving}
+            >
+              {saving ? 'Creating…' : 'Create manager'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 export function TeamPage() {
   const { auth } = useAuthStore()
   const [members, setMembers] = useState<TenantMember[]>([])
   const [loading, setLoading] = useState(true)
   const token = auth.accessToken
+  const canManage = isTenantAdmin(auth.user)
+  const [reloads, setReloads] = useState(0)
 
   useEffect(() => {
     if (!token) return
@@ -492,7 +619,14 @@ export function TeamPage() {
     }
 
     void loadMembers()
-  }, [token])
+  }, [token, reloads])
+
+  const admins = members.filter((m) =>
+    m.assignments.some((a) => a.role === 'admin')
+  ).length
+  const unassigned = members.filter(
+    (m) => isManager(m) && projectCount(m) === 0
+  ).length
 
   return (
     <>
@@ -508,18 +642,31 @@ export function TeamPage() {
           hint='active users'
         />
         <MetricCard label='Site teams' value='0' hint='project groups' />
-        <MetricCard label='Pending invites' value='0' hint='awaiting signup' />
-        <MetricCard label='Admins' value='0' hint='workspace owners' />
+        <MetricCard
+          label='Unassigned'
+          value={String(unassigned)}
+          hint='managers without a project'
+        />
+        <MetricCard
+          label='Admins'
+          value={String(admins)}
+          hint='workspace owners'
+        />
       </div>
 
       <Panel
         title='Members'
         className='mt-4'
-        description='Managers are created and granted access from a project’s Team tab, scoped to that project.'
+        description='Managers are created here, then granted access per project from a project’s Team tab.'
         action={
-          <Button variant='outline' size='sm' className='rounded-md text-xs'>
-            Export
-          </Button>
+          <div className='flex gap-2'>
+            <Button variant='outline' size='sm' className='rounded-md text-xs'>
+              Export
+            </Button>
+            {canManage && (
+              <CreateManagerDialog onCreated={() => setReloads((n) => n + 1)} />
+            )}
+          </div>
         }
       >
         <div className='overflow-x-auto'>
@@ -558,7 +705,9 @@ export function TeamPage() {
                     <span>{primaryRole(m)}</span>
                     <ChevronDown className='size-3 text-muted-foreground' />
                   </div>
-                  <div className='font-mono text-muted-foreground'>0</div>
+                  <div className='font-mono text-muted-foreground'>
+                    {projectCount(m)}
+                  </div>
                   <div>
                     <StatusPill tone={m.status === 'active' ? 'good' : 'muted'}>
                       {m.status}
@@ -611,15 +760,6 @@ const emptyProjectForm = {
 
 const emptyClientForm = { name: '', code: '' }
 
-function hasManagerRole(member: TenantMember) {
-  return (
-    member.status === 'active' &&
-    member.assignments.some(
-      (assignment) => assignment.role === 'project_manager'
-    )
-  )
-}
-
 function NewProjectDialog({
   trigger,
   onCreated,
@@ -637,7 +777,7 @@ function NewProjectDialog({
   const [loadingOptions, setLoadingOptions] = useState(false)
   const [saving, setSaving] = useState(false)
   const [creatingClient, setCreatingClient] = useState(false)
-  const managers = members.filter(hasManagerRole)
+  const managers = members.filter(isManager)
 
   useEffect(() => {
     if (!open || !token) return

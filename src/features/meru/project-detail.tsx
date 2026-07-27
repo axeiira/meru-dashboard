@@ -18,11 +18,11 @@ import {
   addMemberRole,
   createBoqItem,
   createBoqVersion,
-  createMember,
   createTicket,
   deleteBoqItem,
   deleteMemberRole,
   deleteTicket,
+  isManager,
   listMembers,
   generatePeriods,
   getProgressReport,
@@ -2704,7 +2704,6 @@ function TeamManage({ projectId }: { projectId: string }) {
   const [members, setMembers] = useState<TenantMember[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [adding, setAdding] = useState(false)
 
   const load = useCallback(async () => {
     if (!token) return
@@ -2722,8 +2721,12 @@ function TeamManage({ projectId }: { projectId: string }) {
     void load()
   }, [load])
 
+  // Managers only — Admins already reach every project, so offering to "assign"
+  // one here would be a no-op grant. New Manager accounts come from the Team page.
   const assigned = members.filter((m) => projectManagerAssignment(m, projectId))
-  const available = members.filter((m) => !projectManagerAssignment(m, projectId))
+  const available = members.filter(
+    (m) => isManager(m) && !projectManagerAssignment(m, projectId)
+  )
 
   const run = async (fn: () => Promise<void>) => {
     if (!token || busy) return
@@ -2747,21 +2750,6 @@ function TeamManage({ projectId }: { projectId: string }) {
       toast.success('Manager assigned to project.')
     })
 
-  const createAndAssign = (form: {
-    full_name: string
-    email: string
-    password: string
-  }) =>
-    run(async () => {
-      await createMember(token!, {
-        ...form,
-        scope_type: 'project',
-        scope_id: projectId,
-      })
-      setAdding(false)
-      toast.success('Manager created and assigned.')
-    })
-
   const revoke = (userId: string, assignmentId: string) =>
     run(async () => {
       await deleteMemberRole(token!, userId, assignmentId)
@@ -2775,51 +2763,26 @@ function TeamManage({ projectId }: { projectId: string }) {
       title='Project team'
       description='Managers assigned here can view and enter data for this project only.'
       action={
-        <div className='flex gap-2'>
-          {available.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild disabled={busy}>
-                <Button
-                  size='sm'
-                  variant='outline'
-                  className='rounded-md text-xs'
-                >
-                  <Plus className='size-3.5' /> Assign existing
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align='end' className='w-56'>
-                {available.map((m) => (
-                  <DropdownMenuItem
-                    key={m.id}
-                    disabled={busy}
-                    onSelect={() => assignExisting(m.id)}
-                  >
-                    <span className='truncate'>{m.full_name || m.email}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          {!adding && (
-            <Button
-              size='sm'
-              className='rounded-md text-xs'
-              disabled={busy}
-              onClick={() => setAdding(true)}
-            >
-              <Plus className='size-3.5' /> New manager
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild disabled={busy || !available.length}>
+            <Button size='sm' className='rounded-md text-xs'>
+              <Plus className='size-3.5' /> Add manager
             </Button>
-          )}
-        </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align='end' className='w-56'>
+            {available.map((m) => (
+              <DropdownMenuItem
+                key={m.id}
+                disabled={busy}
+                onSelect={() => assignExisting(m.id)}
+              >
+                <span className='truncate'>{m.full_name || m.email}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       }
     >
-      {adding && (
-        <NewManagerForm
-          busy={busy}
-          onCreate={createAndAssign}
-          onClose={() => setAdding(false)}
-        />
-      )}
       <div className='divide-y divide-border'>
         {assigned.length ? (
           assigned.map((m) => {
@@ -2833,79 +2796,16 @@ function TeamManage({ projectId }: { projectId: string }) {
               />
             )
           })
-        ) : !adding ? (
-          <EmptyState message='No managers assigned. Assign an existing member or create one.' />
-        ) : null}
+        ) : (
+          <EmptyState
+            message={
+              available.length
+                ? 'No managers assigned. Add one with the button above.'
+                : 'No managers assigned. Create a manager on the Team page first.'
+            }
+          />
+        )}
       </div>
     </Panel>
-  )
-}
-
-function NewManagerForm({
-  busy,
-  onCreate,
-  onClose,
-}: {
-  busy: boolean
-  onCreate: (form: {
-    full_name: string
-    email: string
-    password: string
-  }) => void
-  onClose: () => void
-}) {
-  const empty = { full_name: '', email: '', password: '' }
-  const [f, setF] = useState(empty)
-  const set =
-    (k: keyof typeof empty) => (e: React.ChangeEvent<HTMLInputElement>) =>
-      setF((p) => ({ ...p, [k]: e.target.value }))
-  const valid = f.full_name.trim() && f.email.trim() && f.password.length >= 8
-  const fieldCls =
-    'h-8 w-full rounded-sm border border-input bg-background px-2 text-xs outline-none focus:border-primary'
-
-  return (
-    <div className='mb-4 space-y-2.5 rounded-md border border-border bg-muted/40 p-3'>
-      <div className='grid gap-2.5 sm:grid-cols-3'>
-        <input
-          autoFocus
-          value={f.full_name}
-          onChange={set('full_name')}
-          placeholder='Full name'
-          className={fieldCls}
-        />
-        <input
-          type='email'
-          value={f.email}
-          onChange={set('email')}
-          placeholder='Email'
-          className={fieldCls}
-        />
-        <input
-          type='password'
-          value={f.password}
-          onChange={set('password')}
-          placeholder='Password (min 8)'
-          className={fieldCls}
-        />
-      </div>
-      <div className='flex justify-end gap-2'>
-        <Button
-          size='sm'
-          variant='outline'
-          className='rounded-md text-xs'
-          onClick={onClose}
-        >
-          Cancel
-        </Button>
-        <Button
-          size='sm'
-          className='rounded-md text-xs'
-          disabled={!valid || busy}
-          onClick={() => onCreate(f)}
-        >
-          <Plus className='size-3.5' /> Create &amp; assign
-        </Button>
-      </div>
-    </div>
   )
 }

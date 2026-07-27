@@ -60,6 +60,22 @@ export type TenantMember = {
     scope_type: string
     scope_id: string | null
   }[]
+  // Live projects only. Do not recompute this from `assignments` — grants can
+  // outlive the project they point at (see GET /members). Absent on the
+  // create-member response, which returns a single fresh row.
+  project_count?: number
+}
+
+// A Manager is an active member holding no role other than project_manager.
+// Freshly created Managers have zero assignments (they get one when assigned to
+// a project), so this cannot test for a project_manager grant — it excludes
+// Admins instead, who carry a tenant-scope 'admin' grant. Mirrors the
+// server-side check in POST /projects.
+export function isManager(member: TenantMember): boolean {
+  return (
+    member.status === 'active' &&
+    member.assignments.every((a) => a.role === 'project_manager')
+  )
 }
 
 export type Client = {
@@ -195,19 +211,20 @@ export async function listMembers(
   return res.json()
 }
 
-// Creates a project_manager. Scope defaults to tenant-wide; pass a project
-// scope to grant access to a single project (the Manager model).
+// Creates a project_manager. Omit the scope (the Team page case) and the
+// Manager is created with no grant — they see nothing until assigned to a
+// project. Pass a project scope to create and assign in one call.
 export async function createMember(
   token: string,
   body: {
     email: string
     password: string
     full_name: string
-    scope_type?: 'tenant' | 'client' | 'project'
-    scope_id?: string | null
+    scope_type?: 'client' | 'project'
+    scope_id?: string
   }
 ): Promise<{ user: TenantMember & { role: 'project_manager' } }> {
-  const { scope_type = 'tenant', scope_id = null, ...rest } = body
+  const { scope_type, scope_id, ...rest } = body
   const res = await fetch(`${BASE}/members`, {
     method: 'POST',
     headers: tenantJsonHeaders(token),
@@ -215,8 +232,7 @@ export async function createMember(
     body: JSON.stringify({
       ...rest,
       role_key: 'project_manager',
-      scope_type,
-      scope_id: scope_type === 'tenant' ? null : scope_id,
+      ...(scope_type ? { scope_type, scope_id } : {}),
     }),
   })
   if (!res.ok) throw new Error(await errorMessage(res))

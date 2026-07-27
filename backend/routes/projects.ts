@@ -81,15 +81,23 @@ projectsRouter.post(
         `SELECT id FROM roles WHERE tenant_id IS NULL AND key = 'project_manager'`,
       )
       if (!role.rowCount) throw errors.badRequest('Project manager role is not configured.')
+      // A Manager is an active tenant user holding no role other than
+      // project_manager. Not "has a project_manager grant" — a Manager created
+      // from the Team page has no grant yet, and requiring one here made
+      // project creation and manager creation depend on each other. Admins
+      // (tenant-scope 'admin' grant) are excluded by the NOT EXISTS.
       const managers = await q<{ id: string }>(
-        `SELECT DISTINCT u.id
+        `SELECT u.id
          FROM users u
-         JOIN role_assignments ra ON ra.user_id = u.id
-         JOIN roles r ON r.id = ra.role_id
          WHERE u.status = 'active'
-           AND r.key = 'project_manager'
-           AND u.id = ANY($1::uuid[])`,
-        [b.manager_user_ids],
+           AND u.tenant_id = $2
+           AND u.id = ANY($1::uuid[])
+           AND NOT EXISTS (
+             SELECT 1 FROM role_assignments ra
+             JOIN roles r ON r.id = ra.role_id
+             WHERE ra.user_id = u.id AND r.key <> 'project_manager'
+           )`,
+        [b.manager_user_ids, req.user!.tid],
       )
       if (managers.rowCount !== new Set(b.manager_user_ids).size) {
         throw errors.unprocessable('Select active members with the Manager role.')
@@ -260,16 +268,33 @@ projectsRouter.patch(
 )
 
 // DELETE /projects/:projectId  (soft)
+//
+// The project row is kept, but its Manager grants are dropped for real:
+// role_assignments.scope_id is polymorphic (client or project) so no foreign key
+// cascades them, and a grant left pointing at a dead project keeps counting
+// toward the member's project total and keeps handing out permissions through
+// fn_user_project_permissions. Both statements share one transaction.
+//
+// Note this makes the soft delete one-way for the team: restoring the row (no
+// endpoint does today — only a DBA could) would come back with no Managers
+// assigned.
 projectsRouter.delete(
   '/projects/:projectId',
   requirePermission('project.manage', paramScope('project', 'projectId')),
   asyncHandler(async (req, res) => {
-    const r = await withCtx(req.ctx, (q) =>
-      q(`UPDATE projects SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, [
-        req.params.projectId,
-      ]),
-    )
-    if (!r.rowCount) throw errors.notFound('Project not found.')
+    await withCtx(req.ctx, async (q) => {
+      const r = await q(
+        `UPDATE projects SET deleted_at = now()
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+        [req.params.projectId, req.user!.tid],
+      )
+      if (!r.rowCount) throw errors.notFound('Project not found.')
+      await q(
+        `DELETE FROM role_assignments
+         WHERE scope_type = 'project' AND scope_id = $1 AND tenant_id = $2`,
+        [req.params.projectId, req.user!.tid],
+      )
+    })
     res.status(204).end()
   }),
 )
