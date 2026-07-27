@@ -1,0 +1,112 @@
+# Render Blueprint — two environments in one file.
+#
+#   staging  -> branch `staging`, autoDeploy: true   (deploys on every commit)
+#   prod     -> branch `main`,    autoDeploy: false  (deploys only via the tag
+#                                                      GitHub Action's deploy hook)
+#
+# ── One-time manual steps after first `render.yaml` sync (Render can't do these) ──
+# 1. Each managed DB below gives you an OWNER role. Connect once as owner and run,
+#    in order: db/01_schema.sql, 02, 03, 04, 05. That creates the `app_rls` login role
+#    (password 'app', NOSUPERUSER NOBYPASSRLS) the app actually uses.
+#      psql "<owner Internal Database URL>" -f db/01_schema.sql   # ...through 05
+# 2. Set each API service's DATABASE_URL (marked sync:false) to the app_rls URL:
+#      postgresql://app_rls:app@<db Internal host>:5432/<db name>
+#    Use the Internal host (no SSL needed inside Render). For PROD, first change
+#    app_rls's password off 'app' (ALTER ROLE app_rls PASSWORD '...') and use that.
+# 3. Seed the first platform admin once (idempotent). From your machine, point at
+#    the DB's EXTERNAL url (app_rls creds, sslmode=require) and run:
+#      DATABASE_URL="postgresql://app_rls:...@<external host>/<db>?sslmode=require" \
+#        pnpm api:bootstrap "you@company.com" "<strong-password>" "Your Name"
+#    That super_admin then adds/manages all other admins and users via the app.
+# 4. Create a Deploy Hook for BOTH prod services (api + web). Store their URLs as
+#    GitHub secrets RENDER_DEPLOY_HOOK_API / RENDER_DEPLOY_HOOK_WEB — see the workflow.
+# 5. Verify the onrender.com URLs below match what Render assigned; fix the /api
+#    rewrite destinations if the names got a suffix.
+
+databases:
+  - name: dashboard-db-prod
+    plan: basic-256mb           # ~$6/mo. Bump when data grows.
+    postgresMajorVersion: "16"
+
+  - name: dashboard-db-staging
+    plan: free                  # free for 30 days, then expires — recreate or upgrade.
+    postgresMajorVersion: "16"
+
+services:
+  # ───────────────────────── PRODUCTION ─────────────────────────
+  - type: web
+    name: dashboard-api-prod
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: pnpm api:start        # override the dev-watch CMD in the Dockerfile
+    plan: starter                        # ~$7/mo
+    branch: main
+    autoDeploy: false                    # prod deploys only via tag -> deploy hook
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false                      # set manually to the app_rls URL (see step 2)
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: COOKIE_SECURE
+        value: "true"
+
+  - type: web
+    name: dashboard-web-prod
+    runtime: static
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    staticPublishPath: ./dist
+    branch: main
+    autoDeploy: false
+    routes:
+      # Same-origin proxy so auth cookies just work (no CORS). Order matters:
+      # the /api rule must precede the SPA fallback.
+      - type: rewrite
+        source: /api/*
+        destination: https://dashboard-api-prod.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # ───────────────────────── STAGING ─────────────────────────
+  - type: web
+    name: dashboard-api-staging
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    dockerCommand: pnpm api:start
+    plan: free                           # spins down when idle
+    branch: staging
+    autoDeploy: true                     # deploy on every commit to `staging`
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: COOKIE_SECURE
+        value: "true"
+
+  - type: web
+    name: dashboard-web-staging
+    runtime: static
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    staticPublishPath: ./dist
+    branch: staging
+    autoDeploy: true
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://dashboard-api-staging.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html

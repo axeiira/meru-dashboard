@@ -1,0 +1,22 @@
+name: Deploy Production
+
+# Prod CI/CD = git tag. Push a tag like v1.2.3 to deploy that exact commit.
+# Staging deploys itself on every commit (Render autoDeploy), so it isn't here.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      # Deploy hooks build the service's tracked branch (main); &ref pins the
+      # exact tag so prod ships what you tagged, not whatever main tip is.
+      - name: Trigger Render production deploys
+        run: |
+          curl -fsSL "${API_HOOK}&ref=${GITHUB_REF_NAME}"
+          curl -fsSL "${WEB_HOOK}&ref=${GITHUB_REF_NAME}"
+        env:
+          API_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_API }}
+          WEB_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_WEB }}
