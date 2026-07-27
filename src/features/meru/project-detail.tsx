@@ -1620,7 +1620,7 @@ function ProgressTab({ projectId }: { projectId: string }) {
   // compares like-for-like (planned vs actual at the same period), even when
   // the data date sits past a cleared trailing period.
   const lastIdx = actual.cumulative.reduce(
-    (last, v, i) => (v != null ? i : last),
+    (last: number, v, i) => (v != null ? i : last),
     -1
   )
   const latestActual = lastIdx < 0 ? 0 : (actual.cumulative[lastIdx] ?? 0)
