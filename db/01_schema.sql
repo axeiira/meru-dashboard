@@ -6,6 +6,13 @@
 
 BEGIN;
 
+-- Seeds below insert into FORCE-RLS tables (roles, role_permissions). A Postgres
+-- superuser bypasses RLS, but a plain DB owner (e.g. managed Postgres on Render)
+-- does not, so the seed INSERTs would violate the platform-only WITH CHECK.
+-- Assert the platform-admin flag for this transaction so the seeds pass; SET LOCAL
+-- scopes it here and it's harmless under a superuser.
+SET LOCAL app.is_platform_admin = 'on';
+
 -- §2 extensions ------------------------------------------------------------
 CREATE EXTENSION IF NOT EXISTS pgcrypto;  -- gen_random_uuid()
 CREATE EXTENSION IF NOT EXISTS citext;    -- case-insensitive email
